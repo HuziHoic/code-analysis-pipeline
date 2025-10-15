@@ -1,0 +1,59 @@
+name: Security Scan Pipeline
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python (for Semgrep)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Semgrep
+        run: |
+          pip install semgrep
+
+      - name: Run Semgrep (SAST)
+        run: |
+          semgrep --config=p/owasp-top-ten --json > semgrep-report.json
+
+      - name: Build DVNA Docker Image
+        run: |
+          docker build -t dvna:test .
+
+      - name: Run DVNA Container
+        run: |
+          docker run -d --name dvna -p 9090:9090 dvna:test
+          sleep 15  # Give it a few seconds to start
+
+      - name: Run OWASP ZAP Baseline Scan (DAST)
+        run: |
+          docker run --network=host -v $(pwd):/zap/wrk \
+            ghcr.io/zaproxy/zaproxy zap-baseline.py \
+            -t http://localhost:9090 -r zap-report.html || true
+
+      - name: Upload Semgrep Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: semgrep-report.json
+
+      - name: Upload ZAP Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: zap-report.html
+
+      - name: Stop Containers
+        if: always()
+        run: |
+          docker stop dvna || true
+          docker rm dvna || true
